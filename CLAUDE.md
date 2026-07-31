@@ -137,34 +137,65 @@ Project ID: `fuynizhfhfnvbdzwihgp`
 ### PPC ACOS Top-Up tables
 
 Extends the PPC Top Up automation with **per-campaign** budget top-ups, separate from the
-country-level daily cap schedule (`ppc_topup_countries` / `ppc_topup_schedule` above). Every
-10 minutes, an external n8n/Python process checks all out-of-budget (OOB) campaigns, computes
-each one's ACOS (per the marketplace's configured `acos_metric`), matches it to a band in
-`ppc_acos_topup_bands`, and — if the marketplace is enabled and the per-campaign daily caps in
-`ppc_acos_topup_settings` haven't been hit (checked against `ppc_acos_topup_log`) — raises that
-campaign's budget by the band's `topup_amount` via the Ads API, then writes a row to
-`ppc_acos_topup_log`. This portal only owns the configuration and the audit log view; it does
-not call Amazon directly for this feature.
+country-level daily cap schedule (`ppc_topup_countries` / `ppc_topup_schedule` above).
 
-**`ppc_acos_topup_settings`** — one row per `country_code`:
+> **This only ever applies to campaigns that are out of budget (OOB) at that moment.** Every 10
+> minutes the external n8n/Python process lists the campaigns currently OOB, and only those are
+> evaluated. A campaign comfortably within budget is never touched, whatever its ACOS. These are
+> not general budget schedules.
+
+For each OOB campaign the process computes **both** ACOS figures — today's and 14-day — matches
+each to a band in `ppc_acos_topup_schedule` **at the current 10-minute slot**, and, if neither cap
+in `ppc_acos_topup_band_settings` **for that matched (metric, band)** would be breached (checked
+against `ppc_acos_topup_log`), raises that campaign's budget by the matched `topup_amount` via the
+Ads API, then writes a row to `ppc_acos_topup_log`. The two metrics are independent: one campaign
+can receive a today-ACOS top-up and a 14-day-ACOS top-up in the same tick, each gated by its own
+caps. This portal only owns the configuration and the audit log view; it does not call Amazon
+directly for this feature.
+
+> Caps have moved twice: flat-per-country → per-band → now **per (metric, band)**. Today's `0-10`
+> band and 14-Day's `0-10` band have fully independent "max budget" and "max individual campaign
+> budget" values, edited via a small settings icon in each band's column header on the Today-ACOS
+> / 14-Day-ACOS schedule cards. There is no longer a standalone "ACOS Top-Up" settings card in the
+> portal — the old marketplace-wide Enabled/Disabled toggle and the audit-log view were removed
+> from the UI along with it (deliberate simplification, confirmed with the user; both were still
+> at their defaults — `enabled=false` for every country — when removed). `ppc_acos_topup_settings`
+> and `ppc_acos_topup_log` **tables still exist in the DB** and are still written/read by the
+> external n8n/Python process, they just have no portal UI anymore — flipping `enabled` now
+> requires editing the row directly in Supabase. The external process must look up caps by
+> `(country_code, acos_metric, band_key)` in `ppc_acos_topup_band_settings` — it has **not yet been
+> updated** to the per-metric shape and still needs a matching update outside this repo.
+
+**`ppc_acos_topup_band_settings`** — one row per `(country_code, acos_metric, band_key)`, 4 rows
+per (country, metric), 8 per country:
 
 | Column | Type | Notes |
 |---|---|---|
-| `country_code` | `text` | PK, matches `ppc_topup_countries.country_code` |
-| `enabled` | `bool` | Default `false` |
-| `acos_metric` | `text` | `"14d"` or `"today"` — applies to all 4 bands below |
-| `max_daily_topup_per_campaign` | `numeric` | $ cap per campaign per day |
-| `max_topups_per_campaign_per_day` | `int` | Count cap per campaign per day |
-| `updated_at` | `timestamptz` | Auto |
-
-**`ppc_acos_topup_bands`** — 4 fixed rows per `country_code` (`0-10`, `10-20`, `20-30`, `30-plus`); only `topup_amount` is staff-editable:
-
-| Column | Type | Notes |
-|---|---|---|
-| `country_code` | `text` | Composite PK with `band_key` |
+| `country_code` | `text` | Composite PK with `acos_metric`, `band_key`; matches `ppc_topup_countries.country_code` |
+| `acos_metric` | `text` | `"today"` \| `"14d"` — independent caps per metric |
 | `band_key` | `text` | `"0-10"` \| `"10-20"` \| `"20-30"` \| `"30-plus"` |
-| `topup_amount` | `numeric` | Fixed $ top-up when a campaign's ACOS falls in this band |
+| `max_daily_topup_total` | `numeric` | "Max budget" — total $ across **all** campaigns in this (metric, band), this marketplace, per day |
+| `max_campaign_budget` | `numeric` | "Max individual campaign budget" — highest daily budget one campaign in this (metric, band) may be raised to |
 | `updated_at` | `timestamptz` | Auto |
+
+**`ppc_acos_topup_schedule`** — the two staff-editable grids. 144 slots × 4 bands × 2 metrics =
+**1152 pre-seeded rows per `country_code`**, all seeded to `0`; only `topup_amount` is editable.
+Slots are the same 144 ten-minute labels as `ppc_topup_schedule` (`CANONICAL_SLOTS` in
+`lib/ppc-daily-cap-constants.ts`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `country_code` | `text` | Composite PK with `acos_metric`, `slot_time`, `band_key` |
+| `acos_metric` | `text` | `"today"` \| `"14d"` — one grid each, both active |
+| `slot_time` | `text` | `"HH:MM"`, one of the 144 canonical slots |
+| `band_key` | `text` | `"0-10"` \| `"10-20"` \| `"20-30"` \| `"30-plus"` |
+| `topup_amount` | `numeric` | $ top-up when an OOB campaign's ACOS falls in this band at this slot |
+| `updated_at` | `timestamptz` | Auto |
+
+> 1152 rows/country exceeds PostgREST's default 1000-row cap, so `getAcosTopupConfig(countryCode)`
+> fetches **per (country, metric)** — 576 rows each — and errors if a query returns anything other
+> than `EXPECTED_SCHEDULE_ROWS`. A truncated grid must never render as complete: staff saving one
+> would wipe the missing slots.
 
 **`ppc_acos_topup_log`** — audit trail, written by n8n after each applied top-up, read-only from the portal:
 
@@ -174,9 +205,10 @@ not call Amazon directly for this feature.
 | `country_code` | `text` | |
 | `campaign_id` | `text` | Amazon campaign id |
 | `campaign_name` | `text` | Denormalized for display |
-| `acos_metric` | `text` | `"14d"` or `"today"` |
+| `acos_metric` | `text` | `"today"` or `"14d"` — which of the two grids fired |
 | `acos_value` | `numeric` | ACOS at the time of the check |
 | `band_key` | `text` | Which band matched |
+| `slot_time` | `text` | `"HH:MM"` slot the top-up fired in; `null` for pre-schedule rows |
 | `topup_amount` | `numeric` | $ applied |
 | `previous_budget` | `numeric` | |
 | `new_budget` | `numeric` | |
