@@ -38,6 +38,8 @@ import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
+  ChartLegend,
+  ChartLegendContent,
   type ChartConfig,
 } from "@/components/ui/chart";
 import { ppcTopUp } from "@/lib/projects";
@@ -81,6 +83,13 @@ import {
 
 const chartConfig = {
   runningTotal: { label: "Cumulative cap ($)", color: "var(--color-chart-1)" },
+} satisfies ChartConfig;
+
+const acosBandChartConfig = {
+  "0-10": { label: "< 10%", color: "var(--color-chart-1)" },
+  "10-20": { label: "10% – 20%", color: "var(--color-chart-2)" },
+  "20-30": { label: "20% – 30%", color: "var(--color-chart-3)" },
+  "30-plus": { label: "30%+", color: "var(--color-chart-4)" },
 } satisfies ChartConfig;
 
 function nextUpcomingSlot(): string {
@@ -953,6 +962,18 @@ function AcosScheduleCard({
     }
     return totals;
   }, [amounts, dirty]);
+  const chartData = useMemo(
+    () =>
+      CANONICAL_SLOTS.map((slot) => {
+        const point: Record<string, string | number> = { slot };
+        for (const band of ACOS_BANDS) {
+          const raw = dirty[slot]?.[band.key];
+          point[band.key] = raw !== undefined ? toNumericAmount(raw) : amounts[slot]?.[band.key] ?? 0;
+        }
+        return point;
+      }),
+    [amounts, dirty]
+  );
 
   return (
     <>
@@ -979,6 +1000,27 @@ function AcosScheduleCard({
             ))}
           </div>
         ) : (
+          <>
+          <ChartContainer config={acosBandChartConfig} className="mb-4 h-56 w-full">
+            <LineChart data={chartData}>
+              <CartesianGrid vertical={false} />
+              <XAxis dataKey="slot" tickLine={false} axisLine={false} interval={11} />
+              <YAxis tickLine={false} axisLine={false} width={36} />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <ChartLegend content={<ChartLegendContent />} />
+              <ReferenceLine x={currentSlotSgt()} stroke="var(--color-destructive)" strokeDasharray="4 4" />
+              {ACOS_BANDS.map((band) => (
+                <Line
+                  key={band.key}
+                  dataKey={band.key}
+                  type="monotone"
+                  stroke={`var(--color-${band.key})`}
+                  strokeWidth={2}
+                  dot={false}
+                />
+              ))}
+            </LineChart>
+          </ChartContainer>
           <div className="max-h-140 overflow-x-auto overflow-y-auto rounded-md border border-border">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-muted/80 backdrop-blur">
@@ -1047,6 +1089,7 @@ function AcosScheduleCard({
               </tbody>
             </table>
           </div>
+          </>
         )}
       </CardContent>
 
