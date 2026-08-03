@@ -600,11 +600,12 @@ function SkuDetailDialog({
     load();
   }, [load]);
 
-  const priceRows: { label: string; value: number | null }[] = detail
+  const priceRows: { label: string; value: number | null; nullLabel?: string }[] = detail
     ? [
-        { label: "Your Price", value: detail.salesPrice },
+        { label: "Your Price", value: detail.ourPrice },
+        { label: "Live Buyer Price", value: detail.livePrice },
         { label: "Sale Price", value: detail.discountedPrice },
-        { label: "List Price", value: detail.listPrice },
+        { label: "List Price", value: detail.listPriceExact, nullLabel: "Not set" },
         { label: "Featured Price", value: detail.featuredPrice },
       ]
     : [];
@@ -673,12 +674,14 @@ function SkuDetailDialog({
                     <dt className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                       {row.label}
                     </dt>
-                    <dd className="font-medium">{formatPrice(row.value)}</dd>
+                    <dd className="font-medium">
+                      {row.value === null && row.nullLabel ? row.nullLabel : formatPrice(row.value)}
+                    </dd>
                   </div>
                 ))}
               </dl>
 
-              {detail.salesPrice === null && (
+              {detail.ourPrice === null && (
                 <p className="text-xs text-muted-foreground">
                   {detail.error ?? "No active offer on Amazon for this SKU."}
                 </p>

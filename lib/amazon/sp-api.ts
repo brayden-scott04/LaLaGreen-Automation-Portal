@@ -14,6 +14,7 @@ export type MarketplaceCode = keyof typeof MARKETPLACE_IDS;
 export interface PricingResult {
   sku: string;
   listPrice: number | null;
+  listPriceAttr: number | null;
   salesPrice: number | null;
   discountedPrice: number | null;
   featuredPrice: number | null;
@@ -31,6 +32,12 @@ export interface SkuDetail {
   maxSellerAllowedPrice: number | null;
   productName: string | null;
   productDescription: string | null;
+  /** Seller-configured price — Listings Items purchasable_offer.our_price, read directly (not a fallback). */
+  ourPrice: number | null;
+  /** Amazon's live buyer-facing price — the raw v0 BuyingPrice.ListingPrice.Amount, before the our_price fallback below overwrites salesPrice. */
+  livePrice: number | null;
+  /** Real List Price only (v0 AttributeSets.ListPrice or Listings Items list_price attribute) — null if neither is set, never RegularPrice. */
+  listPriceExact: number | null;
   error?: string;
 }
 
@@ -138,6 +145,7 @@ function extractOwnPricing(payload: PricingApiItem[], results: Map<string, Prici
     const listPriceAttr = item.Product?.AttributeSets?.[0]?.ListPrice?.Amount;
     result.salesPrice = offer?.BuyingPrice?.ListingPrice?.Amount ?? null;
     result.listPrice = listPriceAttr ?? offer?.RegularPrice?.Amount ?? null;
+    result.listPriceAttr = listPriceAttr ?? null;
   }
 }
 
@@ -158,7 +166,10 @@ function extractFeaturedPricing(payload: PricingApiItem[], results: Map<string, 
 export async function getSkuPricing(skus: string[], marketplaceId: string): Promise<PricingResult[]> {
   const cleaned = [...new Set(skus.map((s) => s.trim()).filter(Boolean))];
   const results = new Map<string, PricingResult>(
-    cleaned.map((sku) => [sku, { sku, listPrice: null, salesPrice: null, discountedPrice: null, featuredPrice: null }])
+    cleaned.map((sku) => [
+      sku,
+      { sku, listPrice: null, listPriceAttr: null, salesPrice: null, discountedPrice: null, featuredPrice: null },
+    ])
   );
 
   const chunks = chunk(cleaned, CHUNK_SIZE);
@@ -256,6 +267,9 @@ export async function getSkuDetail(sku: string, marketplaceId: string): Promise<
     maxSellerAllowedPrice: null,
     productName: null,
     productDescription: null,
+    ourPrice: null,
+    livePrice: pricing.salesPrice,
+    listPriceExact: pricing.listPriceAttr,
     error: pricing.error,
   };
 
@@ -277,9 +291,16 @@ export async function getSkuDetail(sku: string, marketplaceId: string): Promise<
     // schedule shape extractOfferPrice already handles). Null when no sale is configured.
     detail.discountedPrice = extractOfferPrice(attrs, "discounted_price");
 
+    detail.ourPrice = extractOfferPrice(attrs, "our_price");
+
     if (detail.listPrice === null) {
       const listPriceAttr = firstAttr(attrs, "list_price");
       detail.listPrice = asNumber(listPriceAttr?.value_with_tax ?? listPriceAttr?.value);
+    }
+
+    if (detail.listPriceExact === null) {
+      const listPriceAttr = firstAttr(attrs, "list_price");
+      detail.listPriceExact = asNumber(listPriceAttr?.value_with_tax ?? listPriceAttr?.value);
     }
 
     // The Product Pricing API only returns a sales price when there's a buyable offer. For

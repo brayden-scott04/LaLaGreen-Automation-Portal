@@ -193,7 +193,7 @@ export default function PpcTopUpPage() {
     }));
   }
 
-  function discard(countryCode: string) {
+  function clearCountryDirty(countryCode: string) {
     setDirty((prev) => {
       const next = { ...prev };
       delete next[countryCode];
@@ -201,21 +201,47 @@ export default function PpcTopUpPage() {
     });
   }
 
-  function save(countryCode: string) {
-    const changes = Object.entries(dirty[countryCode] ?? {}).map(([slotTime, rawValue]) => ({
-      slotTime,
-      amount: toNumericAmount(rawValue),
-    }));
-    if (changes.length === 0) return;
+  function clearSlot(countryCode: string, slotTime: string) {
+    setDirty((prev) => {
+      const countryDirty = { ...prev[countryCode] };
+      delete countryDirty[slotTime];
+      const next = { ...prev, [countryCode]: countryDirty };
+      if (Object.keys(countryDirty).length === 0) delete next[countryCode];
+      return next;
+    });
+  }
+
+  function commitSlot(countryCode: string, slotTime: string) {
+    const raw = dirty[countryCode]?.[slotTime];
+    if (raw === undefined) return;
+
+    const trimmed = raw.trim();
+    if (trimmed === "") {
+      clearSlot(countryCode, slotTime);
+      return;
+    }
+
+    const parsed = toNumericAmount(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      clearSlot(countryCode, slotTime);
+      return;
+    }
+
+    const previous = amountsByCountry[countryCode]?.[slotTime] ?? 0;
+    if (parsed === previous) {
+      clearSlot(countryCode, slotTime);
+      return;
+    }
+
     startTransition(async () => {
-      const { error } = await updateScheduleSlots(countryCode, changes);
+      const { error } = await updateScheduleSlots(countryCode, [{ slotTime, amount: parsed }]);
       if (error) {
         setError(error);
       } else {
-        discard(countryCode);
         setError(null);
         reload();
       }
+      clearSlot(countryCode, slotTime);
     });
   }
 
@@ -313,7 +339,6 @@ export default function PpcTopUpPage() {
               const rows = [...computeRunningTotals(amounts, country.reset_time)].sort((a, b) =>
                 a.slot.localeCompare(b.slot)
               );
-              const dirtyCount = Object.keys(dirty[country.country_code] ?? {}).length;
               const maxCap = Object.values(amounts).reduce((sum, v) => sum + (v || 0), 0);
 
               return (
@@ -399,7 +424,12 @@ export default function PpcTopUpPage() {
                                           e.target.value
                                         )
                                       }
+                                      onBlur={() => commitSlot(country.country_code, slot)}
                                       onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.currentTarget.blur();
+                                          return;
+                                        }
                                         if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
                                         e.preventDefault();
                                         const nextSlot =
@@ -431,27 +461,11 @@ export default function PpcTopUpPage() {
                         <span>
                           Max daily cap: <strong className="text-foreground">${maxCap.toFixed(2)}</strong>
                         </span>
-                        {dirtyCount > 0 && (
+                        {isPending && (
                           <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
-                            {dirtyCount} unsaved change{dirtyCount === 1 ? "" : "s"}
+                            Saving…
                           </span>
                         )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => discard(country.country_code)}
-                          disabled={isPending || dirtyCount === 0}
-                          className="rounded-md px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          Discard
-                        </button>
-                        <button
-                          onClick={() => save(country.country_code)}
-                          disabled={isPending || dirtyCount === 0}
-                          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {isPending ? "Saving…" : "Save Changes"}
-                        </button>
                       </div>
                     </CardFooter>
                 </Card>
@@ -471,7 +485,7 @@ export default function PpcTopUpPage() {
                   countries={countries}
                   currentAmountsByCountry={allAmounts}
                   onApplied={(countryCodes) => {
-                    countryCodes.forEach((cc) => discard(cc));
+                    countryCodes.forEach((cc) => clearCountryDirty(cc));
                     reload();
                   }}
                 />
@@ -917,32 +931,52 @@ function AcosScheduleCard({
     setDirty((prev) => ({ ...prev, [slot]: { ...prev[slot], [bandKey]: raw } }));
   }
 
-  function discard() {
-    setDirty({});
-  }
-
-  function save() {
-    const changes = Object.entries(dirty).flatMap(([slotTime, cells]) =>
-      Object.entries(cells).map(([bandKey, raw]) => ({
-        slotTime,
-        bandKey: bandKey as AcosBandKey,
-        topupAmount: toNumericAmount(raw),
-      }))
-    );
-    if (changes.length === 0) return;
-    startTransition(async () => {
-      const { error } = await updateAcosTopupSchedule(countryCode, metric, changes);
-      if (error) {
-        setError(error);
-        return;
-      }
-      discard();
-      setError(null);
-      reload();
+  function clearCell(slot: string, bandKey: AcosBandKey) {
+    setDirty((prev) => {
+      const slotDirty = { ...prev[slot] };
+      delete slotDirty[bandKey];
+      const next = { ...prev, [slot]: slotDirty };
+      if (Object.keys(slotDirty).length === 0) delete next[slot];
+      return next;
     });
   }
 
-  const dirtyCount = Object.values(dirty).reduce((sum, cells) => sum + Object.keys(cells).length, 0);
+  function commitCell(slot: string, bandKey: AcosBandKey) {
+    const raw = dirty[slot]?.[bandKey];
+    if (raw === undefined) return;
+
+    const trimmed = raw.trim();
+    if (trimmed === "") {
+      clearCell(slot, bandKey);
+      return;
+    }
+
+    const parsed = toNumericAmount(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      clearCell(slot, bandKey);
+      return;
+    }
+
+    const previous = amounts[slot]?.[bandKey] ?? 0;
+    if (parsed === previous) {
+      clearCell(slot, bandKey);
+      return;
+    }
+
+    startTransition(async () => {
+      const { error } = await updateAcosTopupSchedule(countryCode, metric, [
+        { slotTime: slot, bandKey, topupAmount: parsed },
+      ]);
+      if (error) {
+        setError(error);
+      } else {
+        setError(null);
+        reload();
+      }
+      clearCell(slot, bandKey);
+    });
+  }
+
   const dailyTotal = CANONICAL_SLOTS.reduce(
     (sum, slot) =>
       sum +
@@ -1065,7 +1099,12 @@ function AcosScheduleCard({
                             }}
                             value={displayValue}
                             onChange={(e) => setCell(slot, band.key, e.target.value)}
+                            onBlur={() => commitCell(slot, band.key)}
                             onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.currentTarget.blur();
+                                return;
+                              }
                               if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
                               e.preventDefault();
                               const nextSlot = CANONICAL_SLOTS[e.key === "ArrowDown" ? idx + 1 : idx - 1];
@@ -1099,27 +1138,11 @@ function AcosScheduleCard({
             Sum of all slots &amp; bands:{" "}
             <strong className="text-foreground">${dailyTotal.toFixed(2)}</strong>
           </span>
-          {dirtyCount > 0 && (
+          {isPending && (
             <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
-              {dirtyCount} unsaved change{dirtyCount === 1 ? "" : "s"}
+              Saving…
             </span>
           )}
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={discard}
-            disabled={isPending || dirtyCount === 0}
-            className="rounded-md px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Discard
-          </button>
-          <button
-            onClick={save}
-            disabled={isPending || dirtyCount === 0}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isPending ? "Saving…" : "Save Changes"}
-          </button>
         </div>
       </CardFooter>
     </Card>
