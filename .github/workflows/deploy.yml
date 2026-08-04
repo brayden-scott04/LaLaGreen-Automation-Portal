@@ -21,6 +21,13 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
+      # NEXT_PUBLIC_* values are inlined into the bundle at build time, so they
+      # must be correct HERE -- they cannot be fixed later from Vercel's project
+      # settings. They come from GitHub Secrets rather than `vercel pull`
+      # because the Vercel project stores them as "sensitive" variables, whose
+      # values the API/CLI can never read back: `vercel pull` writes the literal
+      # placeholder "[SENSITIVE]", which then gets baked in as the Supabase key
+      # and makes every login fail with "Invalid username or password".
       - name: Build Project Artifacts
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
@@ -28,11 +35,15 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ADS_CLIENT_ID: ${{ secrets.ADS_CLIENT_ID }}
           ADS_CLIENT_SECRET: ${{ secrets.ADS_CLIENT_SECRET }}
           ADS_REFRESH_TOKEN: ${{ secrets.ADS_REFRESH_TOKEN }}
 
+      # This step only uploads the already-built artifacts, so these values
+      # aren't strictly required -- kept in sync with the build step above so
+      # the two can't drift apart again.
       - name: Deploy Project Artifacts to Vercel
         run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
@@ -40,7 +51,8 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ADS_CLIENT_ID: ${{ secrets.ADS_CLIENT_ID }}
           ADS_CLIENT_SECRET: ${{ secrets.ADS_CLIENT_SECRET }}
           ADS_REFRESH_TOKEN: ${{ secrets.ADS_REFRESH_TOKEN }}
