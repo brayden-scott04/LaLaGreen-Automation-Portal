@@ -3,7 +3,7 @@ name: Vercel Production Deployment
 on:
   push:
     branches:
-      - main # Change to 'master' if your default branch is named master
+      - main # Change to 'master' if needed
 
 jobs:
   deploy:
@@ -16,7 +16,8 @@ jobs:
         run: npm install --global vercel@latest
 
       - name: Deploy Direct to Vercel
-        run: vercel --prod --yes --token=${{ secrets.VERCEL_TOKEN }}
+        # Added --link-project flag below to automatically create the project outline
+        run: vercel --prod --yes --link-project --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           # Core app secrets
