@@ -16,8 +16,7 @@ jobs:
         run: npm install --global vercel@latest
 
       - name: Link Project to Vercel
-        # This creates the new project container on Vercel automatically
-        run: vercel link --yes --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel link --yes --project=lalagreen-automation-portal --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
 
@@ -25,16 +24,22 @@ jobs:
         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          # Next.js needs these variables during the compilation/build phase:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          ADS_CLIENT_ID: ${{ secrets.ADS_CLIENT_ID }}
+          ADS_CLIENT_SECRET: ${{ secrets.ADS_CLIENT_SECRET }}
+          ADS_REFRESH_TOKEN: ${{ secrets.ADS_REFRESH_TOKEN }}
 
       - name: Deploy Project Artifacts to Vercel
         run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          # Core app secrets
+          # Vercel needs these variables to run your website live:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          # Amazon Advertising API
           ADS_CLIENT_ID: ${{ secrets.ADS_CLIENT_ID }}
           ADS_CLIENT_SECRET: ${{ secrets.ADS_CLIENT_SECRET }}
           ADS_REFRESH_TOKEN: ${{ secrets.ADS_REFRESH_TOKEN }}
