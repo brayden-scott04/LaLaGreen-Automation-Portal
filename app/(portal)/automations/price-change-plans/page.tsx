@@ -613,6 +613,10 @@ function NewPricePlanSheet({
   }
 
   const filtered = (skus ?? []).filter((s) => s.sku.toUpperCase().includes(search.trim().toUpperCase()));
+  const trimmedSearch = search.trim();
+  const isExactMatch = (skus ?? []).some((s) => s.sku.toUpperCase() === trimmedSearch.toUpperCase());
+  const showManualEntry = skus !== null && trimmedSearch !== "" && !isExactMatch;
+  const selectedSkuInMasterList = selectedSku !== null && (skus ?? []).some((s) => s.sku === selectedSku);
 
   return (
     <Sheet
@@ -648,21 +652,36 @@ function NewPricePlanSheet({
             <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-border p-1">
               {skus === null ? (
                 <Skeleton className="h-8 w-full" />
-              ) : filtered.length === 0 ? (
-                <p className="px-2 py-1.5 text-sm text-muted-foreground">No SKUs match &quot;{search}&quot;.</p>
               ) : (
-                filtered.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => selectSku(s.sku)}
-                    className={`block w-full rounded-md px-2 py-1.5 text-left font-mono text-sm ${
-                      selectedSku === s.sku ? "bg-primary/10 text-primary" : "hover:bg-accent"
-                    }`}
-                  >
-                    {s.sku}
-                  </button>
-                ))
+                <>
+                  {filtered.length === 0 && !showManualEntry && (
+                    <p className="px-2 py-1.5 text-sm text-muted-foreground">No SKUs match &quot;{search}&quot;.</p>
+                  )}
+                  {filtered.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => selectSku(s.sku)}
+                      className={`block w-full rounded-md px-2 py-1.5 text-left font-mono text-sm ${
+                        selectedSku === s.sku ? "bg-primary/10 text-primary" : "hover:bg-accent"
+                      }`}
+                    >
+                      {s.sku}
+                    </button>
+                  ))}
+                  {showManualEntry && (
+                    <button
+                      type="button"
+                      onClick={() => selectSku(trimmedSearch)}
+                      className={`block w-full rounded-md px-2 py-1.5 text-left text-sm ${
+                        selectedSku === trimmedSearch ? "bg-primary/10 text-primary" : "hover:bg-accent"
+                      }`}
+                    >
+                      Use &quot;<span className="font-mono">{trimmedSearch}</span>&quot;{" "}
+                      <span className="text-muted-foreground">(not in master list)</span>
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -719,7 +738,10 @@ function NewPricePlanSheet({
                   </button>
                 </div>
               ) : detail ? (
-                <SkuDetailPanel detail={detail} onRefresh={() => fetchPrice(selectedSku, marketplace)} />
+                <div className="space-y-2">
+                  {!selectedSkuInMasterList && <Badge variant="outline">Not in master list</Badge>}
+                  <SkuDetailPanel detail={detail} onRefresh={() => fetchPrice(selectedSku, marketplace)} />
+                </div>
               ) : null}
             </div>
           )}

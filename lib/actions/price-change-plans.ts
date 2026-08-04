@@ -69,7 +69,12 @@ export async function createPricePlan(input: {
     return { data: null, error: "Target price is required" };
   }
 
-  const detail = await getSkuDetail(sku, MARKETPLACE_IDS[marketplace]);
+  let detail;
+  try {
+    detail = await getSkuDetail(sku, MARKETPLACE_IDS[marketplace]);
+  } catch (e) {
+    return { data: null, error: e instanceof Error ? e.message : "Failed to look up SKU on Amazon" };
+  }
   // For a Sale Price plan, start from the live promotional sale price; when no sale is active
   // fall back to Your Price, since a new sale logically begins at the current selling price.
   const startPrice =
