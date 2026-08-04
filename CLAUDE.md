@@ -160,11 +160,24 @@ directly for this feature.
 > portal — the old marketplace-wide Enabled/Disabled toggle and the audit-log view were removed
 > from the UI along with it (deliberate simplification, confirmed with the user; both were still
 > at their defaults — `enabled=false` for every country — when removed). `ppc_acos_topup_settings`
-> and `ppc_acos_topup_log` **tables still exist in the DB** and are still written/read by the
-> external n8n/Python process, they just have no portal UI anymore — flipping `enabled` now
-> requires editing the row directly in Supabase. The external process must look up caps by
-> `(country_code, acos_metric, band_key)` in `ppc_acos_topup_band_settings` — it has **not yet been
-> updated** to the per-metric shape and still needs a matching update outside this repo.
+> and `ppc_acos_topup_log` **tables still exist in the DB**, they just have no portal UI anymore.
+
+> **Backend status (2026-07-31): wired, running in testing mode.** The external process
+> (`LaLaGreen-PPC-Task`, sibling repo) now reads these tables live on every `/budget` run —
+> `classify_acos_bands()` in `sp_account_budget.py` looks up `ppc_acos_topup_schedule` at the
+> current 10-minute slot and caps by `(country_code, acos_metric, band_key)` in
+> `ppc_acos_topup_band_settings`, so portal edits take effect on the next tick. Two caveats:
+>
+> - **`TESTING_MODE = True`** in `indiv_campaign_settings.py` — it computes, logs and reports the
+>   full result but makes **no Amazon call**, and the Telegram report is suffixed `(Testing)`.
+>   Rows written in this mode carry `is_test = true`. Going live is `TESTING_MODE = False` plus
+>   `DELETE FROM ppc_acos_topup_log WHERE is_test;` so the daily caps restart from zero.
+> - **`ppc_acos_topup_settings.enabled` is not consulted.** It lost its portal toggle and the
+>   backend deliberately ignores it; on/off lives in `TOP_UP_INDIV_CAMPAIGN` in
+>   `indiv_campaign_settings.py`. Don't reintroduce a dependency on that column without also
+>   restoring a UI for it.
+>
+> Requires `acos_topup_migration.sql` (in the PPC-Task repo) to have been applied.
 
 **`ppc_acos_topup_band_settings`** — one row per `(country_code, acos_metric, band_key)`, 4 rows
 per (country, metric), 8 per country:
@@ -197,7 +210,11 @@ Slots are the same 144 ten-minute labels as `ppc_topup_schedule` (`CANONICAL_SLO
 > than `EXPECTED_SCHEDULE_ROWS`. A truncated grid must never render as complete: staff saving one
 > would wipe the missing slots.
 
-**`ppc_acos_topup_log`** — audit trail, written by n8n after each applied top-up, read-only from the portal:
+**`ppc_acos_topup_log`** — audit trail, written by the external process after each applied top-up,
+read-only from the portal. Also the **source of truth for the `max_daily_topup_total` cap**: each
+run sums today's rows per `(metric, band)` via the `acos_topup_totals_today` RPC, so a row here is
+not just a record — it consumes that band's remaining daily budget. One row per
+`(campaign, metric)`: a campaign topped up on both grids in the same tick writes two.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -213,6 +230,8 @@ Slots are the same 144 ten-minute labels as `ppc_topup_schedule` (`CANONICAL_SLO
 | `previous_budget` | `numeric` | |
 | `new_budget` | `numeric` | |
 | `applied_at` | `timestamptz` | |
+| `marketplace_date` | `date` | Which marketplace day the cap counts this against. Written explicitly, **not** derived from `applied_at` — the US/CA day rolls over at 15:00 SGT, so grouping on `applied_at`'s calendar date would split one day in two and reset the cap early |
+| `is_test` | `bool` | `true` = simulated (`TESTING_MODE`), never sent to Amazon. Still counts toward the daily cap so the limit is exercised; purge before going live |
 | `created_at` | `timestamptz` | Auto |
 
 ### Supabase clients
