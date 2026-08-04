@@ -18,6 +18,10 @@ export interface PricingResult {
   salesPrice: number | null;
   discountedPrice: number | null;
   featuredPrice: number | null;
+  /** Raw Pricing API sales price, captured before the no-active-offer/our_price fallback below may overwrite salesPrice. */
+  livePrice: number | null;
+  /** Seller-configured price — Listings Items purchasable_offer.our_price, read directly (not a fallback). */
+  ourPrice: number | null;
   error?: string;
 }
 
@@ -34,7 +38,7 @@ export interface SkuDetail {
   productDescription: string | null;
   /** Seller-configured price — Listings Items purchasable_offer.our_price, read directly (not a fallback). */
   ourPrice: number | null;
-  /** Amazon's live buyer-facing price — the raw v0 BuyingPrice.ListingPrice.Amount, before the our_price fallback below overwrites salesPrice. */
+  /** Amazon's live buyer-facing price — the raw v0 BuyingPrice.ListingPrice.Amount, before getSkuPricing's our_price fallback (for listings with no active offer) overwrites salesPrice. */
   livePrice: number | null;
   /** Real List Price only (v0 AttributeSets.ListPrice or Listings Items list_price attribute) — null if neither is set, never RegularPrice. */
   listPriceExact: number | null;
@@ -163,12 +167,49 @@ function extractFeaturedPricing(payload: PricingApiItem[], results: Map<string, 
   }
 }
 
+const LISTINGS_CONCURRENCY = 5;
+const LISTINGS_BATCH_DELAY_MS = 500;
+
+/**
+ * Seller-configured offer prices from the Listings Items API — `our_price` (a.k.a. "Your Price"
+ * in this portal) and `discounted_price` (the promotional Sale Price), read in one call. These
+ * live on the listing itself, independent of whether the Product Pricing API currently reports a
+ * buyable offer. Best-effort: nulls on any failure.
+ */
+async function getListingsOfferPrices(
+  sku: string,
+  marketplaceId: string
+): Promise<{ ourPrice: number | null; discountedPrice: number | null }> {
+  try {
+    const sellerId = process.env.SELLER_ID!;
+    const listing = await callSpApiJson<ListingsItemResponse>(
+      `/listings/2021-08-01/items/${sellerId}/${encodeURIComponent(sku)}`,
+      { marketplaceIds: marketplaceId, includedData: "attributes" }
+    );
+    return {
+      ourPrice: extractOfferPrice(listing.attributes, "our_price"),
+      discountedPrice: extractOfferPrice(listing.attributes, "discounted_price"),
+    };
+  } catch {
+    return { ourPrice: null, discountedPrice: null };
+  }
+}
+
 export async function getSkuPricing(skus: string[], marketplaceId: string): Promise<PricingResult[]> {
   const cleaned = [...new Set(skus.map((s) => s.trim()).filter(Boolean))];
   const results = new Map<string, PricingResult>(
     cleaned.map((sku) => [
       sku,
-      { sku, listPrice: null, listPriceAttr: null, salesPrice: null, discountedPrice: null, featuredPrice: null },
+      {
+        sku,
+        listPrice: null,
+        listPriceAttr: null,
+        salesPrice: null,
+        discountedPrice: null,
+        featuredPrice: null,
+        livePrice: null,
+        ourPrice: null,
+      },
     ])
   );
 
@@ -197,11 +238,36 @@ export async function getSkuPricing(skus: string[], marketplaceId: string): Prom
     if (i < chunks.length - 1) await sleep(CHUNK_DELAY_MS);
   }
 
+  for (const result of results.values()) {
+    result.livePrice = result.salesPrice;
+  }
+
+  // "Your Price" (our_price) and Sale Price (discounted_price) live on the listing itself, not
+  // the Product Pricing API — fetch them for every SKU, chunked with light concurrency since the
+  // Listings Items API is a single-SKU-per-call endpoint (unlike the batched pricing calls above).
+  const listingsChunks = chunk(cleaned, LISTINGS_CONCURRENCY);
+  for (let i = 0; i < listingsChunks.length; i++) {
+    const batch = listingsChunks[i];
+    const offerPrices = await Promise.all(batch.map((sku) => getListingsOfferPrices(sku, marketplaceId)));
+    batch.forEach((sku, idx) => {
+      const result = results.get(sku)!;
+      result.ourPrice = offerPrices[idx].ourPrice;
+      result.discountedPrice = offerPrices[idx].discountedPrice;
+    });
+    if (i < listingsChunks.length - 1) await sleep(LISTINGS_BATCH_DELAY_MS);
+  }
+
   // getPricing/getCompetitivePricing both report "Success" even when a SKU has zero
-  // buyable offers — they just omit Offers/CompetitivePrices entirely in that case.
+  // buyable offers — they just omit Offers/CompetitivePrices entirely in that case. Some of
+  // those still have the seller's own configured price in the listing — fall back to that
+  // before giving up.
   for (const result of results.values()) {
     if (!result.error && result.listPrice === null && result.salesPrice === null && result.featuredPrice === null) {
-      result.error = "No active offer on Amazon";
+      if (result.ourPrice !== null) {
+        result.salesPrice = result.ourPrice;
+      } else {
+        result.error = "No active offer on Amazon";
+      }
     }
   }
 
@@ -267,8 +333,8 @@ export async function getSkuDetail(sku: string, marketplaceId: string): Promise<
     maxSellerAllowedPrice: null,
     productName: null,
     productDescription: null,
-    ourPrice: null,
-    livePrice: pricing.salesPrice,
+    ourPrice: pricing.ourPrice,
+    livePrice: pricing.livePrice,
     listPriceExact: pricing.listPriceAttr,
     error: pricing.error,
   };
@@ -287,12 +353,6 @@ export async function getSkuDetail(sku: string, marketplaceId: string): Promise<
     detail.minSellerAllowedPrice = extractOfferPrice(attrs, "minimum_seller_allowed_price");
     detail.maxSellerAllowedPrice = extractOfferPrice(attrs, "maximum_seller_allowed_price");
 
-    // The promotional Sale Price lives in purchasable_offer.discounted_price (same nested
-    // schedule shape extractOfferPrice already handles). Null when no sale is configured.
-    detail.discountedPrice = extractOfferPrice(attrs, "discounted_price");
-
-    detail.ourPrice = extractOfferPrice(attrs, "our_price");
-
     if (detail.listPrice === null) {
       const listPriceAttr = firstAttr(attrs, "list_price");
       detail.listPrice = asNumber(listPriceAttr?.value_with_tax ?? listPriceAttr?.value);
@@ -303,16 +363,6 @@ export async function getSkuDetail(sku: string, marketplaceId: string): Promise<
       detail.listPriceExact = asNumber(listPriceAttr?.value_with_tax ?? listPriceAttr?.value);
     }
 
-    // The Product Pricing API only returns a sales price when there's a buyable offer. For
-    // inactive / out-of-stock listings it reports "No active offer", but the seller's own
-    // configured price still lives in the listing — use it so a plan can still be created.
-    if (detail.salesPrice === null) {
-      const listingPrice = extractOfferPrice(attrs, "our_price");
-      if (listingPrice !== null) {
-        detail.salesPrice = listingPrice;
-        detail.error = undefined;
-      }
-    }
   } catch {
     // Best-effort: keep the pricing fields; leave name/description/min/max as null.
   }

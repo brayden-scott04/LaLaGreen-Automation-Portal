@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Sheet,
@@ -34,7 +35,7 @@ import {
   createPricePlan,
   createBulkPricePlans,
   updatePricePlan,
-  cancelPricePlan,
+  cancelPricePlans,
   type PricePlan,
 } from "@/lib/actions/price-change-plans";
 import { analyzeBulkPriceImport, type DetectedPriceImportSheet } from "@/lib/actions/price-plan-import";
@@ -77,7 +78,8 @@ export default function PriceChangePlansPage() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [bulkSheetOpen, setBulkSheetOpen] = useState(false);
   const [editPlan, setEditPlan] = useState<PricePlan | null>(null);
-  const [cancelId, setCancelId] = useState<string | null>(null);
+  const [cancelIds, setCancelIds] = useState<string[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [isPending, startTransition] = useTransition();
 
   function reloadPlans() {
@@ -96,13 +98,21 @@ export default function PriceChangePlansPage() {
   }, []);
 
   function confirmCancel() {
-    const id = cancelId;
-    if (!id) return;
-    setCancelId(null);
+    const ids = cancelIds;
+    if (!ids || ids.length === 0) return;
+    setCancelIds(null);
+    setSelected(new Set());
     startTransition(async () => {
-      const { error } = await cancelPricePlan(id);
+      const { data, error } = await cancelPricePlans(ids);
       if (error) setError(error);
-      else reloadPlans();
+      else {
+        setError(
+          data && data.cancelled.length < ids.length
+            ? `${data.cancelled.length} of ${ids.length} plan${ids.length === 1 ? "" : "s"} cancelled — the rest were no longer pending.`
+            : null
+        );
+        reloadPlans();
+      }
     });
   }
 
@@ -147,7 +157,15 @@ export default function PriceChangePlansPage() {
                 No price change plans yet — click &quot;+ New Plan&quot; to create one.
               </p>
             ) : (
-              <PlansList plans={plans} isPending={isPending} onCancel={setCancelId} onEdit={setEditPlan} />
+              <PlansList
+                plans={plans}
+                isPending={isPending}
+                onCancel={(id) => setCancelIds([id])}
+                onBulkCancel={(ids) => setCancelIds(ids)}
+                onEdit={setEditPlan}
+                selected={selected}
+                onSelectedChange={setSelected}
+              />
             )}
           </CardContent>
         </Card>
@@ -182,19 +200,24 @@ export default function PriceChangePlansPage() {
         }}
       />
 
-      <AlertDialog open={cancelId !== null} onOpenChange={(open) => !open && setCancelId(null)}>
+      <AlertDialog open={cancelIds !== null} onOpenChange={(open) => !open && setCancelIds(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this price change plan?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {cancelIds && cancelIds.length > 1
+                ? `Cancel ${cancelIds.length} price change plans?`
+                : "Cancel this price change plan?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              n8n will stop applying further steps for this plan. This can&apos;t be undone — you&apos;ll need to
-              create a new plan if you want to resume.
+              {cancelIds && cancelIds.length > 1
+                ? "n8n will stop applying further steps for these plans. This can't be undone — you'll need to create new plans if you want to resume."
+                : "n8n will stop applying further steps for this plan. This can't be undone — you'll need to create a new plan if you want to resume."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep Plan</AlertDialogCancel>
+            <AlertDialogCancel>Keep Plan{cancelIds && cancelIds.length > 1 ? "s" : ""}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={confirmCancel}>
-              Cancel Plan
+              Cancel Plan{cancelIds && cancelIds.length > 1 ? "s" : ""}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -207,12 +230,18 @@ function PlansList({
   plans,
   isPending,
   onCancel,
+  onBulkCancel,
   onEdit,
+  selected,
+  onSelectedChange,
 }: {
   plans: PricePlan[];
   isPending: boolean;
   onCancel: (id: string) => void;
+  onBulkCancel: (ids: string[]) => void;
   onEdit: (plan: PricePlan) => void;
+  selected: Set<string>;
+  onSelectedChange: (next: Set<string>) => void;
 }) {
   const [marketFilter, setMarketFilter] = useState<"ALL" | MarketplaceCode>("ALL");
   const [typeFilter, setTypeFilter] = useState<"ALL" | PriceTypeOption>("ALL");
@@ -229,6 +258,27 @@ function PlansList({
   const pending = filtered.filter((p) => p.status === "active");
   const completed = filtered.filter((p) => p.status === "completed");
   const cancelled = filtered.filter((p) => p.status === "cancelled");
+
+  // Drop any selected ids that fell out of the pending set (filtered away, completed, or
+  // cancelled elsewhere) so the bulk bar never acts on a plan the user can no longer see.
+  useEffect(() => {
+    const pendingIds = new Set(pending.map((p) => p.id));
+    const stale = Array.from(selected).some((id) => !pendingIds.has(id));
+    if (stale) onSelectedChange(new Set(Array.from(selected).filter((id) => pendingIds.has(id))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending]);
+
+  function toggle(id: string) {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onSelectedChange(next);
+  }
+
+  function toggleAll() {
+    if (selected.size === pending.length) onSelectedChange(new Set());
+    else onSelectedChange(new Set(pending.map((p) => p.id)));
+  }
 
   return (
     <Tabs defaultValue="pending">
@@ -292,11 +342,36 @@ function PlansList({
           <p className="text-sm text-muted-foreground">No pending plans right now.</p>
         ) : (
           <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                <Checkbox
+                  checked={selected.size === pending.length}
+                  onCheckedChange={toggleAll}
+                  disabled={isPending}
+                />
+                Select all
+              </label>
+              {selected.size > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">{selected.size} selected</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={isPending}
+                    onClick={() => onBulkCancel(Array.from(selected))}
+                  >
+                    Cancel Selected
+                  </Button>
+                </div>
+              )}
+            </div>
             {pending.map((p) => (
               <PlanCard
                 key={p.id}
                 plan={p}
                 disabled={isPending}
+                selected={selected.has(p.id)}
+                onToggleSelect={() => toggle(p.id)}
                 onCancel={() => onCancel(p.id)}
                 onEdit={() => onEdit(p)}
               />
@@ -320,6 +395,20 @@ function MarketplaceBadge({ code }: { code: MarketplaceCode }) {
   return (
     <Badge variant="secondary" className="font-mono">
       {code}
+    </Badge>
+  );
+}
+
+function DirectionBadge({ direction }: { direction: PricePlan["direction"] }) {
+  const Icon = direction === "increase" ? ArrowUp : ArrowDown;
+  const colorClass =
+    direction === "increase"
+      ? "bg-green-500/10 text-green-700 dark:text-green-400"
+      : "bg-blue-500/10 text-blue-700 dark:text-blue-400";
+  return (
+    <Badge className={colorClass}>
+      <Icon />
+      {direction === "increase" ? "Increasing" : "Decreasing"}
     </Badge>
   );
 }
@@ -362,25 +451,30 @@ function HistoryTable({ plans, emptyText }: { plans: PricePlan[]; emptyText: str
 function PlanCard({
   plan: p,
   disabled,
+  selected,
+  onToggleSelect,
   onCancel,
   onEdit,
 }: {
   plan: PricePlan;
   disabled: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
   onCancel: () => void;
   onEdit: () => void;
 }) {
   const pct = progressPercent(p.start_price, p.current_price, p.target_price);
   const days = daysRemaining(p.current_price, p.target_price, p.increment);
-  const DirectionIcon = p.direction === "increase" ? ArrowUp : ArrowDown;
 
   return (
     <div className="rounded-lg border border-border p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
+          <Checkbox checked={selected} onCheckedChange={onToggleSelect} disabled={disabled} aria-label="Select plan" />
           <span className="font-mono text-sm font-medium">{p.sku}</span>
           <MarketplaceBadge code={p.marketplace} />
           <Badge variant="outline">{priceTypeLabel(p.price_type)}</Badge>
+          <DirectionBadge direction={p.direction} />
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <Button
@@ -409,10 +503,7 @@ function PlanCard({
       <div className="mt-3 grid grid-cols-3 gap-2">
         <div>
           <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Current</p>
-          <p className="flex items-center gap-1 text-lg font-semibold">
-            <DirectionIcon className="size-4 text-muted-foreground" />
-            {formatPrice(p.current_price)}
-          </p>
+          <p className="text-lg font-semibold">{formatPrice(p.current_price)}</p>
         </div>
         <div>
           <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Target</p>
@@ -446,7 +537,8 @@ function PlanCard({
 
 function SkuDetailPanel({ detail, onRefresh }: { detail: SkuDetail; onRefresh: () => void }) {
   const priceRows: { label: string; value: number | null }[] = [
-    { label: "Your Price", value: detail.salesPrice },
+    { label: "Your Price", value: detail.ourPrice },
+    { label: "Live Buyer Price", value: detail.livePrice },
     { label: "Sale Price", value: detail.discountedPrice },
     { label: "List Price", value: detail.listPrice },
     { label: "Featured Price", value: detail.featuredPrice },
@@ -484,7 +576,7 @@ function SkuDetailPanel({ detail, onRefresh }: { detail: SkuDetail; onRefresh: (
         ))}
       </dl>
 
-      {detail.salesPrice === null && (
+      {detail.ourPrice === null && (
         <p className="text-xs text-muted-foreground">
           {detail.error ?? "No current sales price for this SKU — you can't create a plan until it has one."}
         </p>
@@ -515,7 +607,7 @@ function NewPricePlanSheet({
   // Mirror the server's start-price selection: a Sale Price plan starts from the live sale price,
   // falling back to Your Price when no sale is active.
   const currentPrice =
-    priceType === "sale_price" ? detail?.discountedPrice ?? detail?.salesPrice ?? null : detail?.salesPrice ?? null;
+    priceType === "sale_price" ? detail?.discountedPrice ?? detail?.ourPrice ?? null : detail?.ourPrice ?? null;
   const [targetPrice, setTargetPrice] = useState("");
   const [increment, setIncrement] = useState(DEFAULT_INCREMENT);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -580,7 +672,6 @@ function NewPricePlanSheet({
   const hasValidTarget = targetPrice.trim() !== "" && Number.isFinite(targetNum);
   const hasValidIncrement = increment.trim() !== "" && Number.isFinite(incrementNum) && incrementNum > 0;
   const canCreate =
-    !isDuplicate &&
     currentPrice !== null &&
     hasValidTarget &&
     targetNum !== currentPrice &&
@@ -718,8 +809,7 @@ function NewPricePlanSheet({
 
           {isDuplicate && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-              An active {priceLabel} plan already exists for {selectedSku} on {marketplace} — cancel it first or edit
-              the existing plan.
+              Replaces the existing active {priceLabel} plan for {selectedSku} on {marketplace}.
             </div>
           )}
 
@@ -811,7 +901,8 @@ function NewBulkPricePlanSheet({
   const [priceType, setPriceType] = useState<PriceTypeOption>("your_price");
   const [pricingMap, setPricingMap] = useState<Map<string, PricingResult> | null>(null);
   const [targets, setTargets] = useState<Record<string, string>>({});
-  const [increment, setIncrement] = useState(DEFAULT_INCREMENT);
+  const [steps, setSteps] = useState<Record<string, string>>({});
+  const [defaultStep, setDefaultStep] = useState(DEFAULT_INCREMENT);
   const [detected, setDetected] = useState<DetectedPriceImportSheet[] | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -829,7 +920,8 @@ function NewBulkPricePlanSheet({
     setPriceType("your_price");
     setPricingMap(null);
     setTargets({});
-    setIncrement(DEFAULT_INCREMENT);
+    setSteps({});
+    setDefaultStep(DEFAULT_INCREMENT);
     setDetected(null);
     setImportWarnings([]);
     setLoadError(null);
@@ -853,6 +945,7 @@ function NewBulkPricePlanSheet({
       setImportWarnings(data.warnings);
       setSelected(new Set(data.rows.map((r) => r.sku)));
       setTargets(Object.fromEntries(data.rows.map((r) => [r.sku, r.targetPrice !== null ? String(r.targetPrice) : ""])));
+      setSteps(Object.fromEntries(data.rows.map((r) => [r.sku, r.step !== null ? String(r.step) : defaultStep])));
     });
   }
 
@@ -881,6 +974,11 @@ function NewBulkPricePlanSheet({
       delete next[sku];
       return next;
     });
+    setSteps((prev) => {
+      const next = { ...prev };
+      delete next[sku];
+      return next;
+    });
   }
 
   const rowSkus = Array.from(selected);
@@ -889,35 +987,39 @@ function NewBulkPricePlanSheet({
   function currentPriceFor(sku: string): number | null {
     const detail = pricingMap?.get(sku);
     if (!detail) return null;
-    return priceType === "sale_price" ? detail.discountedPrice ?? detail.salesPrice ?? null : detail.salesPrice ?? null;
+    return priceType === "sale_price" ? detail.discountedPrice ?? detail.ourPrice ?? null : detail.ourPrice ?? null;
   }
 
   function isDuplicateFor(sku: string): boolean {
     return activePlans.some((p) => p.sku === sku && p.marketplace === marketplace && p.price_type === priceType);
   }
 
-  const incrementNum = Number(increment);
-  const hasValidIncrement = increment.trim() !== "" && Number.isFinite(incrementNum) && incrementNum > 0;
-
-  const eligibleRows = rowSkus.filter((sku) => currentPriceFor(sku) !== null && !isDuplicateFor(sku));
+  const eligibleRows = rowSkus.filter((sku) => currentPriceFor(sku) !== null);
   const allTargetsValid = eligibleRows.every((sku) => {
     const t = Number(targets[sku]);
     const current = currentPriceFor(sku);
     return (targets[sku] ?? "").trim() !== "" && Number.isFinite(t) && current !== null && t !== current;
   });
+  const allStepsValid = eligibleRows.every((sku) => {
+    const s = Number(steps[sku]);
+    return (steps[sku] ?? "").trim() !== "" && Number.isFinite(s) && s > 0;
+  });
 
-  const canCreate = eligibleRows.length > 0 && allTargetsValid && hasValidIncrement && !isPending;
+  const canCreate = eligibleRows.length > 0 && allTargetsValid && allStepsValid && !isPending;
 
   function handleCreate() {
     if (!canCreate) return;
     setCreateError(null);
     startTransition(async () => {
-      const payload = eligibleRows.map((sku) => ({ sku, targetPrice: Number(targets[sku]) }));
+      const payload = eligibleRows.map((sku) => ({
+        sku,
+        targetPrice: Number(targets[sku]),
+        increment: Number(steps[sku]),
+      }));
       const { data, error } = await createBulkPricePlans({
         skus: payload,
         marketplace,
         priceType,
-        increment: incrementNum,
       });
       if (error || !data) {
         setCreateError(error ?? "Failed to create plans");
@@ -984,6 +1086,20 @@ function NewBulkPricePlanSheet({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">Default step ($)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  className={inputClass}
+                  value={defaultStep}
+                  onChange={(e) => setDefaultStep(e.target.value)}
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Used for any SKU whose step isn&apos;t found in the file — editable per row after upload.
+                </p>
               </div>
 
               <div>
@@ -1060,6 +1176,9 @@ function NewBulkPricePlanSheet({
                         {d.targetColumnLabel
                           ? `, target price in "${d.targetColumnLabel}"`
                           : ", no target price column found"}
+                        {d.stepColumnLabel
+                          ? `, step in "${d.stepColumnLabel}"`
+                          : `, using default step (${formatPrice(Number(defaultStep) || 0)})`}
                         {d.source === "ai" ? " (Claude-detected)" : ""}
                       </p>
                     ))}
@@ -1089,18 +1208,6 @@ function NewBulkPricePlanSheet({
                 ← Back to selection
               </button>
 
-              <div>
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">Increment ($)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  className={inputClass}
-                  value={increment}
-                  onChange={(e) => setIncrement(e.target.value)}
-                />
-                <p className="mt-1 text-xs text-muted-foreground">Applied to every plan in this batch.</p>
-              </div>
-
               {createError && (
                 <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   {createError}
@@ -1116,6 +1223,9 @@ function NewBulkPricePlanSheet({
                   const targetNum = Number(targetVal);
                   const isFilled = targetVal.trim() !== "" && Number.isFinite(targetNum);
                   const sameAsCurrent = isFilled && current !== null && targetNum === current;
+                  const stepVal = steps[sku] ?? "";
+                  const stepNum = Number(stepVal);
+                  const isStepValid = stepVal.trim() !== "" && Number.isFinite(stepNum) && stepNum > 0;
 
                   return (
                     <div key={sku} className="rounded-md border border-border p-2.5">
@@ -1130,27 +1240,40 @@ function NewBulkPricePlanSheet({
                           <X className="size-3.5" />
                         </button>
                       </div>
-                      {duplicate ? (
-                        <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-                          Already has an active {priceLabel} plan — excluded.
-                        </p>
-                      ) : current === null ? (
+                      {current === null ? (
                         <p className="mt-1 text-xs text-destructive">
                           {detail?.error ?? `No current ${priceLabel.toLowerCase()} on Amazon`} — excluded.
                         </p>
                       ) : (
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">Current: {formatPrice(current)}</span>
-                          <input
-                            type="number"
-                            step="0.01"
-                            placeholder="Target ($)"
-                            value={targetVal}
-                            onChange={(e) => setTargets((prev) => ({ ...prev, [sku]: e.target.value }))}
-                            className={`${inputClass} w-28 ${!isFilled ? "border-destructive/50" : ""}`}
-                          />
-                          {sameAsCurrent && <span className="text-xs text-destructive">Must differ from current price</span>}
-                        </div>
+                        <>
+                          {duplicate && (
+                            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                              Replaces existing active {priceLabel} plan.
+                            </p>
+                          )}
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <span className="text-xs text-muted-foreground">
+                              Current {priceLabel}: {formatPrice(current)}
+                            </span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="Target ($)"
+                              value={targetVal}
+                              onChange={(e) => setTargets((prev) => ({ ...prev, [sku]: e.target.value }))}
+                              className={`${inputClass} w-28 ${!isFilled ? "border-destructive/50" : ""}`}
+                            />
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="Step ($)"
+                              value={stepVal}
+                              onChange={(e) => setSteps((prev) => ({ ...prev, [sku]: e.target.value }))}
+                              className={`${inputClass} w-24 ${!isStepValid ? "border-destructive/50" : ""}`}
+                            />
+                            {sameAsCurrent && <span className="text-xs text-destructive">Must differ from current price</span>}
+                          </div>
+                        </>
                       )}
                     </div>
                   );

@@ -12,12 +12,26 @@ async function requireStaff() {
   return { error: null };
 }
 
-const SKU_HINTS = ["sku", "item number", "item #", "item no", "product code", "asin", "product id"];
+// Deliberately does not include "asin" — a sheet with both ASIN and SKU columns should always
+// lock onto the real SKU column. ASIN-only sheets (no match here at all) fall through to the
+// AI detector below, which is trusted to use ASIN as the identifier only when no SKU column exists.
+const SKU_HINTS = ["sku", "item number", "item #", "item no", "product code", "product id"];
 const TARGET_PRICE_HINTS = ["target price", "target", "new price", "desired price", "goal price"];
 const PRICE_FALLBACK_HINTS = ["price"];
+const STEP_HINTS = ["step", "increment", "step size", "step amount", "increase amount", "decrease amount"];
 
 function normalizeHeader(cell: unknown): string {
   return String(cell ?? "").trim().toLowerCase();
+}
+
+function findColumn(row: unknown[], hints: string[], exclude: number[] = []): number {
+  let col = -1;
+  row.forEach((cell, i) => {
+    if (exclude.includes(i)) return;
+    const h = normalizeHeader(cell);
+    if (col === -1 && hints.some((hint) => h.includes(hint))) col = i;
+  });
+  return col;
 }
 
 function parseAmount(raw: unknown): number | null {
@@ -35,20 +49,18 @@ interface ColumnMapping {
   headerRowIndex: number;
   skuCol: number;
   targetCol: number | null;
+  stepCol: number | null;
 }
 
 function detectColumnHeuristically(matrix: unknown[][]): ColumnMapping | null {
   const maxScan = Math.min(matrix.length, 15);
   for (let r = 0; r < maxScan; r++) {
     const row = matrix[r] ?? [];
-    let skuCol = -1;
-    row.forEach((cell, i) => {
-      const h = normalizeHeader(cell);
-      if (skuCol === -1 && SKU_HINTS.some((hint) => h.includes(hint))) skuCol = i;
-    });
+    const skuCol = findColumn(row, SKU_HINTS);
     if (skuCol !== -1) {
       const targetCol = detectTargetColumnHeuristically(row, skuCol);
-      return { headerRowIndex: r, skuCol, targetCol };
+      const stepCol = findColumn(row, STEP_HINTS, [skuCol, targetCol].filter((c): c is number => c !== null));
+      return { headerRowIndex: r, skuCol, targetCol, stepCol: stepCol === -1 ? null : stepCol };
     }
   }
   return null;
@@ -79,6 +91,7 @@ const ColumnDetectSchema = z.object({
       headerRowIndex: z.number().nullable(),
       skuColumnIndex: z.number().nullable(),
       targetPriceColumnIndex: z.number().nullable(),
+      stepColumnIndex: z.number().nullable(),
     })
   ),
 });
@@ -109,12 +122,13 @@ async function detectColumnWithAi(
           role: "user",
           content: `Identify the table structure in each sheet below (0-based row/column indices). Do NOT extract or reproduce any data values — only identify structure.
 
-A SKU is a short product/item identifier code (letters, numbers, dashes/underscores) — not a description, note, or free-text field. A target price column holds the price each SKU should be moved toward (may be labeled "Target Price", "New Price", "Goal Price", or similar — plain "Price" only if nothing more specific exists).
+A SKU is a short product/item identifier code (letters, numbers, dashes/underscores) — not a description, note, or free-text field. If a sheet has both an ASIN column and a separate SKU column, skuColumnIndex must be the SKU column — ASIN is only a valid identifier when no dedicated SKU column exists. A target price column holds the price each SKU should be moved toward (may be labeled "Target Price", "New Price", "Goal Price", or similar — plain "Price" only if nothing more specific exists). A step/increment column holds the $ amount the price should move by each day (may be labeled "Step", "Increment", "Step Size", or similar) — null if no such column exists.
 
 For each sheet return:
 - headerRowIndex: the row index containing column headers (null if none)
 - skuColumnIndex: the column index holding product/item SKUs (null if no such column exists in this sheet)
 - targetPriceColumnIndex: the column index holding the target/new price for each SKU (null if no such column exists)
+- stepColumnIndex: the column index holding the per-day step/increment amount for each SKU (null if no such column exists)
 
 ${preview}`,
         },
@@ -134,6 +148,7 @@ ${preview}`,
       headerRowIndex: s.headerRowIndex,
       skuCol: s.skuColumnIndex,
       targetCol: s.targetPriceColumnIndex,
+      stepCol: s.stepColumnIndex,
     };
   }
   return Object.keys(result).length > 0 ? result : null;
@@ -143,8 +158,14 @@ export interface DetectedPriceImportSheet {
   sheetName: string;
   skuColumnLabel: string;
   targetColumnLabel: string | null;
+  stepColumnLabel: string | null;
   source: "heuristic" | "ai";
   rowsFound: number;
+}
+
+interface ImportedRow {
+  targetPrice: number | null;
+  step: number | null;
 }
 
 function extractRowsFromSheet(opts: {
@@ -152,12 +173,12 @@ function extractRowsFromSheet(opts: {
   matrix: unknown[][];
   mapping: ColumnMapping;
   source: "heuristic" | "ai";
-  rowsBySku: Map<string, number | null>;
+  rowsBySku: Map<string, ImportedRow>;
   detected: DetectedPriceImportSheet[];
   warnings: string[];
 }) {
   const { sheetName, matrix, mapping, source, rowsBySku, detected, warnings } = opts;
-  const { headerRowIndex, skuCol, targetCol } = mapping;
+  const { headerRowIndex, skuCol, targetCol, stepCol } = mapping;
   const headerRow = matrix[headerRowIndex] ?? [];
 
   let rowsFound = 0;
@@ -170,10 +191,11 @@ function extractRowsFromSheet(opts: {
     if (!sku) continue;
 
     const targetPrice = targetCol !== null ? parseAmount(row[targetCol]) : null;
+    const step = stepCol !== null ? parseAmount(row[stepCol]) : null;
     if (rowsBySku.has(sku)) {
       warnings.push(`Duplicate SKU "${sku}" found — using the last occurrence in the file.`);
     }
-    rowsBySku.set(sku, targetPrice);
+    rowsBySku.set(sku, { targetPrice, step });
     rowsFound++;
   }
 
@@ -181,6 +203,7 @@ function extractRowsFromSheet(opts: {
     sheetName,
     skuColumnLabel: String(headerRow[skuCol] ?? `column ${skuCol}`),
     targetColumnLabel: targetCol !== null ? String(headerRow[targetCol] ?? `column ${targetCol}`) : null,
+    stepColumnLabel: stepCol !== null ? String(headerRow[stepCol] ?? `column ${stepCol}`) : null,
     source,
     rowsFound,
   });
@@ -188,7 +211,7 @@ function extractRowsFromSheet(opts: {
 
 export async function analyzeBulkPriceImport(formData: FormData): Promise<{
   data: {
-    rows: { sku: string; targetPrice: number | null }[];
+    rows: { sku: string; targetPrice: number | null; step: number | null }[];
     detected: DetectedPriceImportSheet[];
     warnings: string[];
   } | null;
@@ -210,9 +233,10 @@ export async function analyzeBulkPriceImport(formData: FormData): Promise<{
   }
 
   const warnings: string[] = [];
-  const rowsBySku = new Map<string, number | null>();
+  const rowsBySku = new Map<string, ImportedRow>();
   const detected: DetectedPriceImportSheet[] = [];
-  const sheetsNeedingAi: { sheetName: string; matrix: unknown[][] }[] = [];
+  const sheetsNeedingFullAi: { sheetName: string; matrix: unknown[][] }[] = [];
+  const sheetsNeedingGapFill: { sheetName: string; matrix: unknown[][]; heuristicMapping: ColumnMapping }[] = [];
 
   for (const sheetName of workbook.SheetNames) {
     const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
@@ -224,15 +248,27 @@ export async function analyzeBulkPriceImport(formData: FormData): Promise<{
 
     const mapping = detectColumnHeuristically(matrix);
     if (!mapping) {
-      sheetsNeedingAi.push({ sheetName, matrix });
+      sheetsNeedingFullAi.push({ sheetName, matrix });
+      continue;
+    }
+    // SKU is trustworthy, but the target price and/or step columns weren't recognized by the hint
+    // lists — give AI a shot at those specific columns instead of leaving them blank/defaulted.
+    if (mapping.targetCol === null || mapping.stepCol === null) {
+      sheetsNeedingGapFill.push({ sheetName, matrix, heuristicMapping: mapping });
       continue;
     }
     extractRowsFromSheet({ sheetName, matrix, mapping, source: "heuristic", rowsBySku, detected, warnings });
   }
 
+  const sheetsNeedingAi = [
+    ...sheetsNeedingFullAi,
+    ...sheetsNeedingGapFill.map(({ sheetName, matrix }) => ({ sheetName, matrix })),
+  ];
+
   if (sheetsNeedingAi.length > 0) {
     const columnMap = await detectColumnWithAi(sheetsNeedingAi);
-    for (const { sheetName, matrix } of sheetsNeedingAi) {
+
+    for (const { sheetName, matrix } of sheetsNeedingFullAi) {
       const mapping = columnMap?.[sheetName];
       if (!mapping) {
         warnings.push(`${sheetName}: couldn't identify a SKU column — sheet skipped.`);
@@ -240,12 +276,43 @@ export async function analyzeBulkPriceImport(formData: FormData): Promise<{
       }
       extractRowsFromSheet({ sheetName, matrix, mapping, source: "ai", rowsBySku, detected, warnings });
     }
+
+    for (const { sheetName, matrix, heuristicMapping } of sheetsNeedingGapFill) {
+      const aiMapping = columnMap?.[sheetName];
+      let targetCol = heuristicMapping.targetCol;
+      let stepCol = heuristicMapping.stepCol;
+      let filledByAi = false;
+
+      // Only trust AI's column indices if it identified the same header row the heuristic did —
+      // otherwise the column indices aren't aligned to the rows we're about to extract.
+      if (aiMapping && aiMapping.headerRowIndex === heuristicMapping.headerRowIndex) {
+        if (targetCol === null && aiMapping.targetCol !== null) {
+          targetCol = aiMapping.targetCol;
+          filledByAi = true;
+        }
+        if (stepCol === null && aiMapping.stepCol !== null) {
+          stepCol = aiMapping.stepCol;
+          filledByAi = true;
+        }
+      }
+
+      const mapping: ColumnMapping = { ...heuristicMapping, targetCol, stepCol };
+      extractRowsFromSheet({
+        sheetName,
+        matrix,
+        mapping,
+        source: filledByAi ? "ai" : "heuristic",
+        rowsBySku,
+        detected,
+        warnings,
+      });
+    }
   }
 
   if (detected.length === 0) {
     return { data: null, error: "Couldn't find any recognizable SKU column in this file" };
   }
 
-  const rows = [...rowsBySku].map(([sku, targetPrice]) => ({ sku, targetPrice }));
+  const rows = [...rowsBySku].map(([sku, { targetPrice, step }]) => ({ sku, targetPrice, step }));
   return { data: { rows, detected, warnings }, error: null };
 }

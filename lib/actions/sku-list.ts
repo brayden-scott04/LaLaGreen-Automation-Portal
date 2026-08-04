@@ -160,7 +160,10 @@ export async function deleteSku(id: string) {
 
 // --- AI-assisted Excel import ---
 
-const SKU_HINTS = ["sku", "item number", "item #", "item no", "product code", "asin", "product id"];
+// Deliberately does not include "asin" — a sheet with both ASIN and SKU columns should always
+// lock onto the real SKU column. ASIN-only sheets (no match here at all) fall through to the
+// AI detector below, which is trusted to use ASIN as the identifier only when no SKU column exists.
+const SKU_HINTS = ["sku", "item number", "item #", "item no", "product code", "product id"];
 const STATUS_HINTS = ["status", "active", "enabled", "live", "state"];
 
 // Normalized (trim + lowercase) exact-match values that mean a row's SKU is inactive/discontinued.
@@ -184,6 +187,15 @@ function normalizeHeader(cell: unknown): string {
   return String(cell ?? "").trim().toLowerCase();
 }
 
+function findColumn(row: unknown[], hints: string[]): number {
+  let col = -1;
+  row.forEach((cell, i) => {
+    const h = normalizeHeader(cell);
+    if (col === -1 && hints.some((hint) => h.includes(hint))) col = i;
+  });
+  return col;
+}
+
 function isInactive(rawValue: unknown, hints: string[] = []): boolean {
   const v = String(rawValue ?? "").trim().toLowerCase();
   if (!v) return false;
@@ -201,11 +213,7 @@ function detectColumnHeuristically(matrix: unknown[][]): ColumnMapping | null {
   const maxScan = Math.min(matrix.length, 15);
   for (let r = 0; r < maxScan; r++) {
     const row = matrix[r] ?? [];
-    let skuCol = -1;
-    row.forEach((cell, i) => {
-      const h = normalizeHeader(cell);
-      if (skuCol === -1 && SKU_HINTS.some((hint) => h.includes(hint))) skuCol = i;
-    });
+    const skuCol = findColumn(row, SKU_HINTS);
     if (skuCol !== -1) {
       const statusCol = detectStatusColumnHeuristically(row, skuCol);
       return { headerRowIndex: r, skuCol, ...(statusCol !== null ? { statusCol } : {}) };
@@ -263,7 +271,7 @@ async function detectColumnWithAi(
           role: "user",
           content: `Identify the table structure in each sheet below (0-based row/column indices). Do NOT extract or reproduce any data values — only identify structure, except for inactiveValueHints as noted below.
 
-A SKU is a short product/item identifier code (letters, numbers, dashes/underscores) — not a description, note, or free-text field. Use that to pick the right column even on messy or inconsistently formatted sheets.
+A SKU is a short product/item identifier code (letters, numbers, dashes/underscores) — not a description, note, or free-text field. Use that to pick the right column even on messy or inconsistently formatted sheets. If a sheet has both an ASIN column and a separate SKU column, skuColumnIndex must be the SKU column — ASIN is only a valid identifier when no dedicated SKU column exists.
 
 For each sheet return:
 - headerRowIndex: the row index containing column headers (null if none)
