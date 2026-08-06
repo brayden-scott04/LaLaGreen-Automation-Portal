@@ -8,7 +8,7 @@ export default function ChatPage() {
       <PageHeader
         icon={Sparkles}
         title="Chat"
-        description="Ask about LaLaGreen or this portal"
+        description="Ask about ShopLaLa or this portal"
       />
       <div className="min-h-0 flex-1">
         <ChatPanel />

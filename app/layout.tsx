@@ -9,8 +9,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "LáLáGreen Automation Portal",
-  description: "Internal automation control center for LaLaGreen",
+  title: "ShopLaLa Automation Portal",
+  description: "Internal automation control center for ShopLaLa",
 };
 
 export default function RootLayout({

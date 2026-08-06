@@ -58,7 +58,7 @@ export function SidebarContent({
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-bold tracking-tight text-foreground">
-              LáLáGreen
+              ShopLaLa
               <sup className="ml-0.5 text-[10px] font-normal">&reg;</sup>
             </h1>
             <p className="text-xs text-muted-foreground">Automation Portal</p>

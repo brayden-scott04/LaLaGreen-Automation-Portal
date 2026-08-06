@@ -39,7 +39,7 @@ export function Topbar({
         </SheetContent>
       </Sheet>
       <span className="text-sm font-semibold text-foreground">
-        LáLáGreen Automation Portal
+        ShopLaLa Automation Portal
       </span>
     </header>
   );

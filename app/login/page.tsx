@@ -12,7 +12,7 @@ export default function LoginPage() {
         <Card className="border-border p-8 shadow-sm">
           <CardHeader className="px-0 pb-6 text-center">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
-              LáLáGreen
+              ShopLaLa
               <sup className="ml-0.5 text-xs font-normal">&reg;</sup>
             </h1>
             <p className="text-sm text-muted-foreground">Automation Portal</p>
@@ -22,7 +22,7 @@ export default function LoginPage() {
           </CardContent>
         </Card>
         <p className="mt-4 text-center text-xs text-muted-foreground">
-          Internal tool — LaLaGreen team only
+          Internal tool — ShopLaLa team only
         </p>
       </div>
     </div>
