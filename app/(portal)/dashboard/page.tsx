@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ppcTopUp, projects } from "@/lib/projects";
 import { tools } from "@/lib/tools";
 import { configurationItems } from "@/lib/configuration";
+import { communicationItems } from "@/lib/communications";
 import { getSession } from "@/lib/session";
 import { getMyPermissions } from "@/lib/permissions";
 import { filterItems, isAllowed } from "@/lib/roles";
@@ -17,6 +18,7 @@ export default async function DashboardPage() {
     { label: "Automations", items: filterItems("automations", projects, role, permissions) },
     { label: "Tools", items: filterItems("tools", tools, role, permissions) },
     { label: "Configuration", items: filterItems("configuration", configurationItems, role, permissions) },
+    { label: "Communications", items: filterItems("communications", communicationItems, role, permissions) },
   ].filter((group) => group.items.length > 0);
 
   const hasAnyAccess = accessGroups.length > 0;
@@ -31,8 +33,8 @@ export default async function DashboardPage() {
         Here&apos;s what you have access to.
       </p>
 
-      {/* Your access — shows every automation, tool, and configuration item the
-          signed-in user may open. Admins see everything. */}
+      {/* Your access — shows every item across all sections the signed-in user
+          may open. Admins see everything. */}
       <div className="mt-6">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground">Your access</h3>

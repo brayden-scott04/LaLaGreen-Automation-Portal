@@ -13,12 +13,14 @@ import {
 import { projects } from "@/lib/projects";
 import { tools } from "@/lib/tools";
 import { configurationItems } from "@/lib/configuration";
+import { communicationItems } from "@/lib/communications";
 
 /** Every known item id per section — the universe an admin can grant from. */
 export const ALL_ITEM_IDS: Record<Section, string[]> = {
   automations: projects.map((p) => p.id),
   tools: tools.map((t) => t.id),
   configuration: configurationItems.map((c) => c.id),
+  communications: communicationItems.map((c) => c.id),
 };
 
 /**
@@ -32,6 +34,9 @@ export function sanitizePermissions(input: unknown): PermissionSet {
     tools: parsed.tools.filter((id) => ALL_ITEM_IDS.tools.includes(id)),
     configuration: parsed.configuration.filter((id) =>
       ALL_ITEM_IDS.configuration.includes(id)
+    ),
+    communications: parsed.communications.filter((id) =>
+      ALL_ITEM_IDS.communications.includes(id)
     ),
   };
 }

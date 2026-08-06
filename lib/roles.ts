@@ -6,8 +6,8 @@
  *                  demote, delete accounts, and assign per-user access. Admin
  *                  accounts can only be created/edited directly in the database.
  *  - "moderator" — can create regular users and reset their passwords, and has
- *                  whatever automation/tool/configuration access an admin granted.
- *  - "user"      — has only the automation/tool/configuration access an admin granted.
+ *                  whatever section access an admin granted.
+ *  - "user"      — has only the section access an admin granted.
  *
  * Non-admin access is stored per-account in the `staff.permissions` jsonb column,
  * shaped as {@link PermissionSet}. Admins bypass it entirely (implicit full access).
@@ -24,22 +24,29 @@ export const ROLE_LABELS: Record<Role, string> = {
   user: "Staff",
 };
 
-/** The three gated navigation sections. Keys match route prefixes and permission keys. */
-export type Section = "automations" | "tools" | "configuration";
+/** The gated navigation sections. Keys match route prefixes and permission keys. */
+export type Section = "automations" | "tools" | "configuration" | "communications";
 
-export const SECTIONS: Section[] = ["automations", "tools", "configuration"];
+export const SECTIONS: Section[] = [
+  "automations",
+  "tools",
+  "configuration",
+  "communications",
+];
 
 /** Per-account access grants: arrays of item slug ids per section. */
 export interface PermissionSet {
   automations: string[];
   tools: string[];
   configuration: string[];
+  communications: string[];
 }
 
 export const EMPTY_PERMISSIONS: PermissionSet = {
   automations: [],
   tools: [],
   configuration: [],
+  communications: [],
 };
 
 /** Admins + moderators can create users and reset user passwords. */
@@ -89,5 +96,6 @@ export function toPermissionSet(value: unknown): PermissionSet {
     automations: pick("automations"),
     tools: pick("tools"),
     configuration: pick("configuration"),
+    communications: pick("communications"),
   };
 }

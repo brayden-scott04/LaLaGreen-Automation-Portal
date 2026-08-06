@@ -125,7 +125,7 @@ export async function updateStaffMember(
   return { data, error: dbError?.message ?? null };
 }
 
-/** Admin-only: assign which automations/tools/configuration a user or moderator may access. */
+/** Admin-only: assign which section items a user or moderator may access. */
 export async function updatePermissions(id: string, permissions: PermissionSet) {
   const { client, error } = await requireAdmin();
   if (error) return { data: null, error };

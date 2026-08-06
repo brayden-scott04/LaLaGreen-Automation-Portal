@@ -13,6 +13,7 @@ import {
 import { projects } from "@/lib/projects";
 import { tools } from "@/lib/tools";
 import { configurationItems } from "@/lib/configuration";
+import { communicationItems } from "@/lib/communications";
 import { cn } from "@/lib/utils";
 import { UserMenu } from "@/components/user-menu";
 import { Separator } from "@/components/ui/separator";
@@ -43,6 +44,12 @@ export function SidebarContent({
   const allowedConfiguration = filterItems(
     "configuration",
     configurationItems,
+    role,
+    permissions
+  );
+  const allowedCommunications = filterItems(
+    "communications",
+    communicationItems,
     role,
     permissions
   );
@@ -193,6 +200,35 @@ export function SidebarContent({
           ))}
 
         {allowedConfiguration.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.id}
+              href={item.href}
+              title={collapsed ? item.name : undefined}
+              className={cn(
+                "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium text-foreground hover:bg-accent",
+                collapsed && "justify-center px-2"
+              )}
+            >
+              <Icon className="size-4 shrink-0" />
+              {!collapsed && (
+                <span className="flex-1 truncate">{item.name}</span>
+              )}
+            </Link>
+          );
+        })}
+
+        {allowedCommunications.length > 0 &&
+          (collapsed ? (
+            <Separator className="my-2" />
+          ) : (
+            <p className="px-3 pt-4 pb-1 text-xs font-medium text-muted-foreground">
+              Communications
+            </p>
+          ))}
+
+        {allowedCommunications.map((item) => {
           const Icon = item.icon;
           return (
             <Link

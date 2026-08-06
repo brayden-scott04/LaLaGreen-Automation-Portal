@@ -24,6 +24,7 @@ import {
 import { projects } from "@/lib/projects";
 import { tools } from "@/lib/tools";
 import { configurationItems } from "@/lib/configuration";
+import { communicationItems } from "@/lib/communications";
 
 type StaffMember = {
   id: string;
@@ -33,18 +34,20 @@ type StaffMember = {
   permissions: PermissionSet;
 };
 
-// The three gated sections, with the concrete items an admin can grant per section.
+// The gated sections, with the concrete items an admin can grant per section.
 const ACCESS_SECTIONS: { key: Section; label: string; items: { id: string; name: string }[] }[] = [
   { key: "automations", label: "Automations", items: projects },
   { key: "tools", label: "Tools", items: tools },
   { key: "configuration", label: "Configuration", items: configurationItems },
+  { key: "communications", label: "Communications", items: communicationItems },
 ];
 
 function accessSummary(permissions: PermissionSet): number {
   return (
     permissions.automations.length +
     permissions.tools.length +
-    permissions.configuration.length
+    permissions.configuration.length +
+    permissions.communications.length
   );
 }
 
