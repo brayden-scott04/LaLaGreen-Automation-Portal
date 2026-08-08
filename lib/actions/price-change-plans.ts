@@ -3,6 +3,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { createServiceClient } from "@/lib/supabase/service";
 import { getSession } from "@/lib/session";
+import { getMyPermissions } from "@/lib/permissions";
+import { isAllowed } from "@/lib/roles";
 import { getSkuDetail, getSkuPricing, MARKETPLACE_IDS, type MarketplaceCode } from "@/lib/amazon/sp-api";
 
 export type PriceType = "your_price" | "sale_price";
@@ -22,6 +24,11 @@ export interface PricePlan {
   created_at: string;
   updated_at: string;
   cancelled_at: string | null;
+  /**
+   * "Update now" clicks applied to this plan today (Singapore date), used to
+   * warn on repeat clicks. Not a column — summed from price_plan_manual_steps.
+   */
+  manual_steps_today: number;
 }
 
 const PLAN_COLUMNS =
@@ -30,6 +37,22 @@ const PLAN_COLUMNS =
 async function requireStaff() {
   const session = await getSession();
   if (!session) return { session: null, error: "Unauthorized" as const };
+  return { session, error: null };
+}
+
+/**
+ * Server-side guard for the actions that move a real Amazon price. The route's
+ * layout.tsx guard only covers page navigation — a server action is an
+ * independently callable POST endpoint, so it has to check for itself.
+ */
+async function requirePlanAccess() {
+  const { session, error } = await requireStaff();
+  if (error) return { session: null, error };
+
+  const { role, permissions } = await getMyPermissions();
+  if (!isAllowed(role, permissions, "automations", "price-change-plans")) {
+    return { session: null, error: "Forbidden" as const };
+  }
   return { session, error: null };
 }
 
@@ -43,7 +66,99 @@ export async function listPricePlans(): Promise<{ data: PricePlan[] | null; erro
     .select(PLAN_COLUMNS)
     .order("created_at", { ascending: false });
 
-  return { data: data as PricePlan[] | null, error: dbError?.message ?? null };
+  if (dbError) return { data: null, error: dbError.message };
+
+  // The totals view is service-role only (it summarises a table with no public
+  // policy), so it can't come from the same anon query above.
+  const { data: totals } = await createServiceClient()
+    .from("price_plan_manual_step_totals")
+    .select("plan_id, manual_steps_today");
+
+  const todayByPlan = new Map(
+    (totals ?? []).map((t) => [t.plan_id as string, Number(t.manual_steps_today) || 0])
+  );
+
+  const plans = (data ?? []).map((p) => ({
+    ...p,
+    manual_steps_today: todayByPlan.get(p.id) ?? 0,
+  })) as PricePlan[];
+
+  return { data: plans, error: null };
+}
+
+/**
+ * Apply a plan's next step to Amazon right now instead of waiting for the
+ * midnight-SGT cron.
+ *
+ * The portal can't do this itself — lib/amazon/sp-api.ts is read-only, and all
+ * price writing (sale-schedule preservation, List Price mirroring, marketplace
+ * and currency) lives in the Python worker. That worker publishes no port, so
+ * the call goes through an n8n webhook, which can reach it on the internal
+ * Docker network.
+ *
+ * Synchronous on purpose: the caller is a person waiting on a dialog, and a
+ * rejected Amazon push has to be visible rather than silently swallowed.
+ */
+export async function applyManualStep(
+  planId: string
+): Promise<{ data: { newPrice: number; completed: boolean } | null; error: string | null }> {
+  const { session, error } = await requirePlanAccess();
+  if (error) return { data: null, error };
+
+  const webhookUrl = process.env.N8N_PRICE_STEP_WEBHOOK_URL;
+  const secret = process.env.N8N_WEBHOOK_SECRET;
+  if (!webhookUrl || !secret) {
+    // Name the missing variable rather than letting it surface as an opaque
+    // fetch failure.
+    const missing = [
+      !webhookUrl && "N8N_PRICE_STEP_WEBHOOK_URL",
+      !secret && "N8N_WEBHOOK_SECRET",
+    ].filter(Boolean);
+    return { data: null, error: `Not configured: missing ${missing.join(", ")}` };
+  }
+
+  // Re-read the plan rather than trusting the client's copy — the card may have
+  // been rendered before someone else cancelled or completed this plan.
+  const { data: plan } = await createServiceClient()
+    .from("price_change_plans")
+    .select("id, status")
+    .eq("id", planId)
+    .single();
+
+  if (!plan) return { data: null, error: "Plan not found" };
+  if (plan.status !== "active") {
+    return { data: null, error: `Plan is ${plan.status}, not active` };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Portal-Secret": secret },
+      body: JSON.stringify({ plan_id: planId, requested_by: session!.username }),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (err) {
+    console.error("[price-step] webhook call failed:", err);
+    return {
+      data: null,
+      error: err instanceof Error ? err.message : "Could not reach the price service",
+    };
+  }
+
+  const body = await res.json().catch(() => null);
+
+  if (!res.ok || body?.status !== "ok") {
+    const detail = body?.error || `Price service returned ${res.status}`;
+    console.error("[price-step] rejected:", detail);
+    return { data: null, error: detail };
+  }
+
+  const result = body.result ?? {};
+  return {
+    data: { newPrice: Number(result.expected), completed: Boolean(result.completed) },
+    error: null,
+  };
 }
 
 export async function createPricePlan(input: {

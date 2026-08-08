@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { ArrowDown, ArrowUp, CheckCircle2, Clock, Pencil, X, XCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, CheckCircle2, Clock, Pencil, X, XCircle, Zap } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ import {
   createBulkPricePlans,
   updatePricePlan,
   cancelPricePlans,
+  applyManualStep,
   type PricePlan,
 } from "@/lib/actions/price-change-plans";
 import { analyzeBulkPriceImport, type DetectedPriceImportSheet } from "@/lib/actions/price-plan-import";
@@ -72,6 +73,19 @@ function progressPercent(start: number, current: number, target: number): number
   return Math.min(100, Math.max(0, pct));
 }
 
+/**
+ * Where one more step would land, clamped at the target. Mirrors
+ * _expected_price() in the Python runner — shown in the confirmation dialog so
+ * the operator sees the exact price before it goes to Amazon.
+ */
+function nextStepPrice(p: PricePlan): number {
+  const stepped =
+    p.direction === "decrease"
+      ? Math.max(p.current_price - p.increment, p.target_price)
+      : Math.min(p.current_price + p.increment, p.target_price);
+  return Math.round(stepped * 100) / 100;
+}
+
 export default function PriceChangePlansPage() {
   const [plans, setPlans] = useState<PricePlan[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +93,9 @@ export default function PriceChangePlansPage() {
   const [bulkSheetOpen, setBulkSheetOpen] = useState(false);
   const [editPlan, setEditPlan] = useState<PricePlan | null>(null);
   const [cancelIds, setCancelIds] = useState<string[] | null>(null);
+  const [stepPlan, setStepPlan] = useState<PricePlan | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [notice, setNotice] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function reloadPlans() {
@@ -116,6 +132,26 @@ export default function PriceChangePlansPage() {
     });
   }
 
+  function confirmStep() {
+    const plan = stepPlan;
+    if (!plan) return;
+    setStepPlan(null);
+    setNotice(null);
+    startTransition(async () => {
+      const { data, error } = await applyManualStep(plan.id);
+      if (error) {
+        setError(`${plan.sku}: ${error}`);
+        return;
+      }
+      setError(null);
+      setNotice(
+        `${plan.sku} updated to ${formatPrice(data!.newPrice)}` +
+          (data!.completed ? " — target reached, plan complete." : ".")
+      );
+      reloadPlans();
+    });
+  }
+
   return (
     <>
       <PageHeader icon={priceChangePlans.icon} title={priceChangePlans.name} description={priceChangePlans.description} />
@@ -123,6 +159,12 @@ export default function PriceChangePlansPage() {
         {error && (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {error}
+          </div>
+        )}
+
+        {notice && (
+          <div className="rounded-md border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-foreground">
+            {notice}
           </div>
         )}
 
@@ -163,6 +205,7 @@ export default function PriceChangePlansPage() {
                 onCancel={(id) => setCancelIds([id])}
                 onBulkCancel={(ids) => setCancelIds(ids)}
                 onEdit={setEditPlan}
+                onStep={setStepPlan}
                 selected={selected}
                 onSelectedChange={setSelected}
               />
@@ -222,6 +265,47 @@ export default function PriceChangePlansPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={stepPlan !== null} onOpenChange={(open) => !open && setStepPlan(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Update price now?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This changes the live price on Amazon immediately, without waiting for the nightly run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {stepPlan && (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                <span className="font-mono text-foreground">{stepPlan.sku}</span> · {stepPlan.marketplace} ·{" "}
+                {priceTypeLabel(stepPlan.price_type)}
+              </p>
+              <p className="text-base font-semibold">
+                {formatPrice(stepPlan.current_price)} → {formatPrice(nextStepPrice(stepPlan))}
+              </p>
+
+              {stepPlan.manual_steps_today > 0 && (
+                <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">
+                  You already updated this plan {stepPlan.manual_steps_today}{" "}
+                  {stepPlan.manual_steps_today === 1 ? "time" : "times"} today, moving it{" "}
+                  {formatPrice(stepPlan.manual_steps_today * stepPlan.increment)}.
+                </p>
+              )}
+
+              {nextStepPrice(stepPlan) === stepPlan.target_price && (
+                <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-muted-foreground">
+                  This reaches the target and completes the plan.
+                </p>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmStep}>Update Now</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
@@ -232,6 +316,7 @@ function PlansList({
   onCancel,
   onBulkCancel,
   onEdit,
+  onStep,
   selected,
   onSelectedChange,
 }: {
@@ -240,6 +325,7 @@ function PlansList({
   onCancel: (id: string) => void;
   onBulkCancel: (ids: string[]) => void;
   onEdit: (plan: PricePlan) => void;
+  onStep: (plan: PricePlan) => void;
   selected: Set<string>;
   onSelectedChange: (next: Set<string>) => void;
 }) {
@@ -374,6 +460,7 @@ function PlansList({
                 onToggleSelect={() => toggle(p.id)}
                 onCancel={() => onCancel(p.id)}
                 onEdit={() => onEdit(p)}
+                onStep={() => onStep(p)}
               />
             ))}
           </div>
@@ -455,6 +542,7 @@ function PlanCard({
   onToggleSelect,
   onCancel,
   onEdit,
+  onStep,
 }: {
   plan: PricePlan;
   disabled: boolean;
@@ -462,6 +550,7 @@ function PlanCard({
   onToggleSelect: () => void;
   onCancel: () => void;
   onEdit: () => void;
+  onStep: () => void;
 }) {
   const pct = progressPercent(p.start_price, p.current_price, p.target_price);
   const days = daysRemaining(p.current_price, p.target_price, p.increment);
@@ -477,6 +566,16 @@ function PlanCard({
           <DirectionBadge direction={p.direction} />
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onStep}
+            disabled={disabled}
+            title="Apply the next step to Amazon now"
+          >
+            <Zap />
+            Update now
+          </Button>
           <Button
             variant="ghost"
             size="icon-sm"
